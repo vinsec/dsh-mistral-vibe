@@ -12,6 +12,8 @@ import {
   Config,
   MODEL_CATALOGUE,
   MistralVibeAdapter,
+  budgetOf,
+  budgetSnapshot,
   captureLimits,
   discoverModels,
   enrichFromModelsDev,
@@ -1726,6 +1728,71 @@ await test("the provider's vision answer survives a restart", async () => {
   const picker = await adapter.listModels("mistral-vibe");
   assert.deepEqual(picker.find((entry) => entry.id === "ministral-3b-2512").inputModalities, ["text"]);
   assert.deepEqual(picker.find((entry) => entry.id === "codestral-2508").inputModalities, ["text", "image"]);
+});
+
+await test("the monthly allowance response maps both buckets", async () => {
+  // GET /v1/billing/budget answers percentages, not amounts: the spent figure is
+  // derived, and each bucket is independent so a malformed one is dropped alone.
+  const snapshot = budgetSnapshot({
+    api_budget: {
+      usage_percentage: 0,
+      initial_budget: 15,
+      currency: "USD",
+      reset_at: "2026-12-01T00:00:00Z",
+      payg_enabled: false,
+    },
+    vibe_budget: {
+      usage_percentage: 7.6,
+      initial_budget: 150,
+      currency: "USD",
+      reset_at: "2026-12-01T00:00:00Z",
+      payg_enabled: true,
+    },
+  });
+  assert.equal(snapshot.api.used, 0);
+  assert.equal(snapshot.api.remaining, 15);
+  assert.equal(snapshot.vibe.used, 11.4, "the spent amount is derived from the percentage");
+  assert.equal(snapshot.vibe.remaining, 138.6);
+  assert.equal(snapshot.vibe.percentage, 7.6);
+  assert.equal(snapshot.vibe.currency, "USD");
+  assert.equal(snapshot.vibe.resetAt, "2026-12-01T00:00:00Z");
+  assert.equal(snapshot.vibe.payg, true);
+
+  // Clamping: a percentage outside 0-100 never produces a negative or oversized
+  // allowance, and a bucket without a usable size is dropped rather than shown.
+  assert.equal(budgetOf({ usage_percentage: 120, initial_budget: 10 }).percentage, 100);
+  assert.equal(budgetOf({ usage_percentage: 120, initial_budget: 10 }).remaining, 0);
+  assert.equal(budgetOf({ usage_percentage: -5, initial_budget: 10 }).percentage, 0);
+  assert.equal(budgetOf({ usage_percentage: 5, initial_budget: 10 }).currency, "USD", "a missing currency defaults");
+  assert.equal(budgetOf({ usage_percentage: "x", initial_budget: 10 }), undefined);
+  assert.equal(budgetOf({ usage_percentage: 5, initial_budget: 0 }), undefined);
+  assert.equal(budgetOf(null), undefined);
+  assert.equal(budgetSnapshot({}), undefined);
+  const half = budgetSnapshot({ api_budget: { usage_percentage: 1, initial_budget: 15 } });
+  assert.equal(half.vibe, undefined, "the missing bucket stays missing");
+  assert.equal(half.api.percentage, 1);
+});
+
+await test("the Studio route is gated on its own key and spends it", async () => {
+  // Two provider ids, one adapter: the Studio route must never fall back to the
+  // Vibe key, or a request would spend the other allowance.
+  const noStudio = new MistralVibeAdapter(() => ({ apiKey: "sk-vibe" }));
+  assert.deepEqual(await noStudio.listModels("mistral-vibe-studio"), [], "no Studio key, no second route");
+  assert.ok((await noStudio.listModels("mistral-vibe")).length > 0, "the Vibe route is unaffected");
+  await assert.rejects(
+    () => noStudio.keyFor("mistral-vibe-studio"),
+    /Studio API key/,
+    "the Studio route never borrows the Vibe key",
+  );
+
+  const both = new MistralVibeAdapter(() => ({ apiKey: "sk-vibe", studioApiKey: "sk-studio" }));
+  assert.ok((await both.listModels("mistral-vibe-studio")).length > 0, "a Studio key advertises the route");
+  assert.equal(await both.keyFor("mistral-vibe"), "sk-vibe", "the Vibe route keeps the Vibe key");
+  assert.equal(await both.keyFor("mistral-vibe-studio"), "sk-studio", "the Studio route uses the Studio key");
+  assert.equal(both.providerInfo("mistral-vibe").name, "Mistral Vibe");
+  assert.equal(both.providerInfo("mistral-vibe-studio").name, "Mistral Vibe (Studio)");
+  const resolved = await both.resolveModel("mistral-vibe-studio", "mistral-large-4");
+  assert.equal(resolved.name, "Mistral Large 4", "the Studio route resolves the same catalogue");
 });
 
 server.close();

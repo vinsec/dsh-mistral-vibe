@@ -337,9 +337,30 @@ assert.doesNotMatch(source, /Usage & limits/, "the usage card is gone");
 assert.doesNotMatch(source, /billing\/subscription|readSubscription/, "no billing read remains");
 assert.doesNotMatch(source, /quotaCard|planFields/, "its renderers are gone too");
 
+/* ------------------------------------------------------------- quota pill */
+
+const selectionOf = (provider) => () => ({ lastUsed: { provider, model: "deepseek-v4-1-flash-1017" } });
+const BUDGETS = {
+  api: { used: 0, limit: 15, remaining: 15, percentage: 0, currency: "USD", resetAt: "2026-12-01T00:00:00Z", payg: false },
+  vibe: { used: 11.69, limit: 150, remaining: 138.31, percentage: 7.79, currency: "USD", resetAt: "2026-12-01T00:00:00Z", payg: false },
+};
+
+seedHooks({ 0: { budgets: BUDGETS }, 1: false });
+const vibePill = flatten(elements(exported.QuotaPill({ useProjection: selectionOf("mistral-vibe") }))).join(" ");
+assert.match(vibePill, /\$11\.69 \/ \$150/, "the Vibe route shows the Vibe allowance");
+
+seedHooks({ 0: { budgets: BUDGETS }, 1: false });
+const studioPill = flatten(elements(exported.QuotaPill({ useProjection: selectionOf("mistral-vibe-studio") }))).join(" ");
+assert.match(studioPill, /\$0\.00 \/ \$15/, "the Studio route shows the API allowance");
+
+seedHooks({});
+assert.equal(exported.QuotaPill({ useProjection: selectionOf("deepseek") }), null, "another provider gets no pill");
+assert.equal(exported.QuotaPill({}), null, "a session without a projection gets no pill");
+
 console.log("PASS client half registers the settings.section page Mistral Vibe");
 console.log("PASS the nav glyph is registered under the same id (settings.section.icon)");
 console.log("PASS the page talks to /mistral-vibe/config and /mistral-vibe/discover");
 console.log("PASS no schema form, no plugins.row.config, no harness UI imports");
 console.log("PASS a populated render shows both key cards and the model list");
+console.log("PASS the quota pill shows the current route's allowance");
 console.log(`PASS apply() is inert without services (${calls.length} fetch calls at import)`);
